@@ -1,0 +1,32 @@
+{
+  "name": "belongsql",
+  "version": "0.0.0",
+  "description": "Answer \"belongs to\" questions about relation data",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/holub008/belongsql.git"
+  },
+  "keywords": [
+    "sql",
+    "orm",
+    "belongs",
+    "dag",
+    "graph",
+    "schema",
+    "child",
+    "parent",
+    "descendant",
+    "hierarchy",
+    "postgres"
+  ],
+  "author": "Karl Holub <karljholub@gmail.com>",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/holub008/belongsql/issues"
+  },
+  "homepage": "https://github.com/holub008/belongsql#readme"
+}
