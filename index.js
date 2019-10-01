@@ -51,6 +51,69 @@ function _binarySearch(nodeList, tableName) {
     return -1;
 }
 
+function _bfs(adjacency, nodes, goalIndex, path) {
+    if (path.length === 0) {
+        throw new Error('path must be initialized with at least one node!');
+    }
+
+    const neighbors = new Set(adjacency[path[path.length - 1]]
+        .map((neighbor, index) => ({neighbor, index}))
+        .filter(x => !!x.neighbor)
+        .map(x => x.index));
+
+    if (neighbors.has(goalIndex)) {
+        path.slice().push(adjacency[path[path.length - 1]][goalIndex]);
+        return path;
+    }
+
+    // prevent cycles by only exploring new paths
+    const newNeighbors = neighbors
+}
+
+function _getLinkages(adjacency, nodeIndexPath) {
+    const linkages = [];
+
+     nodeIndexPath.forEach((nodeIndex, listIndex) => {
+         if (listIndex > 0) {
+            linkages.push(adjacency[nodeIndexPath[listIndex - 1]][nodeIndex]);
+         }
+     });
+
+    return linkages;
+}
+
+function _graphSearch(adjacency, nodes, startIndex, goalIndex) {
+    const nodeIndexPath = _bfs(adjacency, nodes, goalIndex, [startIndex]);
+    const pathLinkages = _getLinkages(adjacency, nodeIndexPath);
+
+
+    return {
+        nodes: nodeIndexPath.map(ix => nodes[ix]),
+        linkages: pathLinkages
+    };
+}
+
+function _pathToQuery(nodes, linkages, schema) {
+
+    let joinParts = [];
+    for (let ix = 1; ix < nodes.length; ix++) {
+        const fromNode = nodes[ix -1];
+        const toNode = nodes[ix];
+        const linkage = linkages[ix - 1];
+        const join = `JOIN "${schema}"."${toNode.getTableName()}" 
+                        ON "${schema}"."${fromNode.getTableName()}"."${linkage.getFromColumn()}" = "${schema}"."${toNode.getTableName()}"."${linkage.getToColumn()}"`;
+
+        joinParts.push(join);
+    }
+
+    return `
+        SELECT
+          COUNT(1)
+        FROM "${schema}"."${nodes[0].getTableName()}"
+        ${joinParts.join('\n')}
+    `;
+}
+
 async function buildAdjacencyMatrix(con, schema, directed) {
     const tableDataQuery = {
         text: `
@@ -166,11 +229,13 @@ class SchemaGraph {
     }
 
     async static fromDB(con, schema='public', directed=true) {
-        return buildAdjacencyMatrix(con, schema)
+        return buildAdjacencyMatrix(con, schema, directed)
             .then(result => {new SchemaGraph(result.adjacency, result.nodes));
     }
 
     /**
+     * NOTE! the first 4 arguments must come from trusted sources - are vulnerable to injection attacks in current state
+     * NOTE! if multiple join paths are possible, an arbitrary selection among the shortest length paths is made.
      *
      * @param fromTable <String> the table name containing the object that belongs
      * @param fromKey the key of an object in fromTable
@@ -179,6 +244,10 @@ class SchemaGraph {
      * @param con a node-postgres connection object
      */
     belongsTo(fromTable, fromKey, toTable, toKey, con) {
-        const
+        const fromNodeIx = this._nodes[_binarySearch(this._adjacency, this._nodes, fromTable)];
+        const toNodeIx = this._nodes[_binarySearch(this._adjacency, this._nodes, toTable)];
+
+        {nodes, linkages} = _graphSearch(this._adjacency, this._nodes, fromNodeIx, toNodeIx);
+        return _pathToQuery(nodes, linkages);
     }
 }
