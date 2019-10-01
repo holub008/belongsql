@@ -1,5 +1,3 @@
-
-
 class _Linkage {
     constructor(fromColumn, toColumn) {
         this._fromColumn = fromColumn;
@@ -51,7 +49,7 @@ function _binarySearch(nodeList, tableName) {
     return -1;
 }
 
-function _bfs(adjacency, nodes, goalIndex, path) {
+function _bfs(adjacency, goalIndex, path) {
     if (path.length === 0) {
         throw new Error('path must be initialized with at least one node!');
     }
@@ -62,12 +60,31 @@ function _bfs(adjacency, nodes, goalIndex, path) {
         .map(x => x.index));
 
     if (neighbors.has(goalIndex)) {
-        path.slice().push(adjacency[path[path.length - 1]][goalIndex]);
+        const newPath = path.slice();
+        newPath.push(goalIndex);
         return path;
     }
 
+    const pathSet = new Set(path);
+
     // prevent cycles by only exploring new paths
-    const newNeighbors = neighbors
+    const newNeighbors = neighbors.filter(n => !pathSet.has(n));
+
+    if (newNeighbors.size === 0) {
+        return null;
+    }
+
+    const pathsFromHere = [];
+
+    newNeighbors.forEach(n => {
+        const newPath = path.slice();
+        newPath.push(n);
+
+        const successfulPaths = _bfs(adjacency, goalIndex, newPath).filter(x => !!x);
+        pathsFromHere.concat(successfulPaths);
+    });
+
+    return pathsFromHere;
 }
 
 function _getLinkages(adjacency, nodeIndexPath) {
@@ -83,16 +100,17 @@ function _getLinkages(adjacency, nodeIndexPath) {
 }
 
 function _graphSearch(adjacency, nodes, startIndex, goalIndex) {
-    const nodeIndexPath = _bfs(adjacency, nodes, goalIndex, [startIndex]);
-    const pathLinkages = _getLinkages(adjacency, nodeIndexPath);
+    const nodeIndexPaths = _bfs(adjacency, goalIndex, [startIndex]);
+    const pathLinkages = nodeIndexPaths.map(nodeIndexPath => _getLinkages(adjacency, nodeIndexPath));
 
 
     return {
-        nodes: nodeIndexPath.map(ix => nodes[ix]),
+        nodes: nodeIndexPaths.map(nodeIndexPath => nodeIndexPath.map(ix => nodes[ix])),
         linkages: pathLinkages
     };
 }
 
+// TODO this could be injected if given non-trusted input
 function _pathToQuery(nodes, linkages, schema) {
 
     let joinParts = [];
@@ -108,9 +126,12 @@ function _pathToQuery(nodes, linkages, schema) {
 
     return `
         SELECT
-          COUNT(1)
+          COUNT(1) > 0 as belongs
         FROM "${schema}"."${nodes[0].getTableName()}"
         ${joinParts.join('\n')}
+        WHERE
+          "${nodes[0].getTableName()}"."${nodes[0].getPrimaryKeyColumn()}" = $1
+          AND "${nodes[nodes.length - 1].getTableName()}"."${nodes[nodes.length - 1].getPrimaryKeyColumn()}" = $2
     `;
 }
 
@@ -239,15 +260,35 @@ class SchemaGraph {
      *
      * @param fromTable <String> the table name containing the object that belongs
      * @param fromKey the key of an object in fromTable
-     * @param toTable
+     * @param toTable <String> the table name containing the object that owns
      * @param toKey the key of the putative object in fromTable
      * @param con a node-postgres connection object
+     * @param queryLimit if more than one sequence of joins is possible to assert a "belongs-to" relationship, impose a limit on the number of resulting queries
      */
-    belongsTo(fromTable, fromKey, toTable, toKey, con) {
+    async belongsTo(fromTable, fromKey, toTable, toKey, con,
+                    queryLimit=1) {
         const fromNodeIx = this._nodes[_binarySearch(this._adjacency, this._nodes, fromTable)];
         const toNodeIx = this._nodes[_binarySearch(this._adjacency, this._nodes, toTable)];
 
-        {nodes, linkages} = _graphSearch(this._adjacency, this._nodes, fromNodeIx, toNodeIx);
-        return _pathToQuery(nodes, linkages);
+        const {nodes, linkages} = _graphSearch(this._adjacency, this._nodes, fromNodeIx, toNodeIx);
+
+        // queries are run serially, to avoid pegging DB in case of large queries
+        // with API additions, it would make sense to run in parallel
+        for (let pathIx = 0; pathIx < Math.min(queryLimit, nodes.length); pathIx++) {
+            const pathLinkages = linkages[pathIx];
+            const pathNodes = nodes[pathIx];
+
+            if (pathNodes.length === 1) {
+                continue;
+            }
+
+            const statement = _pathToQuery(pathNodes, pathLinkages);
+            const rs = await con.query({text: statement, values: [fromKey, toKey]});
+            if (rs.rows.length && rs.rows[0].belongs) {
+                return true;
+            }
+        }
+
+        return false;
     }
 }
