@@ -133,7 +133,7 @@ async function buildAdjacencyMatrix(con, schema, directed) {
                   AND ccu.table_schema = tc.table_schema
               WHERE 
                 tc.constraint_type = 'FOREIGN KEY'
-                AND ccu.table_schema = 'public'
+                AND ccu.table_schema = $1
             ),
             primary_keys AS (
                 SELECT
@@ -151,14 +151,14 @@ async function buildAdjacencyMatrix(con, schema, directed) {
                   AND ccu.table_schema = tc.table_schema
               WHERE 
                 tc.constraint_type = 'PRIMARY KEY'
-                AND ccu.table_schema = 'public'
+                AND ccu.table_schema = $1
             ),
             all_tables AS (
               SELECT
                 table_name
               FROM information_schema.tables 
               WHERE 
-                table_schema = 'public'
+                table_schema = $1
                 and table_type = 'BASE TABLE'  
             )
             SELECT 
