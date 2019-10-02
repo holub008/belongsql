@@ -33,16 +33,16 @@ class _Node {
 function _binarySearch(nodeList, tableName) {
     let lower = 0;
     let upper = nodeList.length - 1;
-    while (lower !== upper) {
+    while (lower <= upper) {
         const currentIndex = Math.floor((upper + lower) / 2);
         if (nodeList[currentIndex].getTableName() === tableName) {
             return currentIndex;
         }
         else if (nodeList[currentIndex].getTableName() < tableName) {
-            lower = currentIndex;
+            lower = currentIndex + 1;
         }
         else {
-            upper = currentIndex;
+            upper = currentIndex - 1;
         }
     }
 
@@ -112,7 +112,6 @@ function _graphSearch(adjacency, nodes, startIndex, goalIndex) {
 
 // TODO this could be injected if given non-trusted input
 function _pathToQuery(nodes, linkages, schema) {
-
     let joinParts = [];
     for (let ix = 1; ix < nodes.length; ix++) {
         const fromNode = nodes[ix -1];
@@ -169,8 +168,8 @@ async function buildAdjacencyMatrix(con, schema, directed) {
     const sortedNodes = rawTableData.rows
         .filter(t => t.key_type === 'PRIMARY KEY')
         .sort((a ,b) => {
-            return a.tableName === b.tableName ?
-                0 : a.tableName > b.tableName ?
+            return a.table_name === b.table_name ?
+                0 : a.table_name > b.table_name ?
                     1 : -1;
         })
         .map(t => new _Node(t.table_name, t.column_name));
@@ -211,9 +210,9 @@ class SchemaGraph {
         this._schema = schema;
     }
 
-    static async fromDB(con, schema='public', directed=true) {
+    static async fromDB(con, directed=true, schema='public') {
         return buildAdjacencyMatrix(con, schema, directed)
-            .then(result => {new SchemaGraph(result.adjacency, result.nodes, schema)});
+            .then(result => new SchemaGraph(result.adjacency, result.nodes, schema));
     }
 
     /**
@@ -232,6 +231,10 @@ class SchemaGraph {
                     queryLimit=1) {
         const fromNodeIx = this._nodes[_binarySearch(this._adjacency, this._nodes, fromTable)];
         const toNodeIx = this._nodes[_binarySearch(this._adjacency, this._nodes, toTable)];
+
+        if (fromNodeIx < 0 || toNodeIx < 0) {
+            throw new Error(`One of ${fromTable} or ${toTable} are not present in schema ${this._schema}`);
+        }
 
         const {nodes, linkages} = _graphSearch(this._adjacency, this._nodes, fromNodeIx, toNodeIx);
 
@@ -265,15 +268,25 @@ class SchemaGraph {
      * @return {Promise<number | *>}
      */
     async belongsTo(fromKey, toKey, path, con) {
+        if (path.length < 2) {
+            throw new Error('Must include at least 2 tables in path!');
+        }
+
         const nodeMatches = path.map((table, ix) => ({nodeIndex: _binarySearch(this._nodes, table), pathIx: ix}));
-        const missingTables = nodeMatches.filter(tup => !!tup.node);
+        const missingTables = nodeMatches.filter(tup => tup.nodeIndex < 0);
         if (missingTables.length) {
             throw new Error(`Table(s) {${missingTables.map(tup => path[tup.pathIx]).join(',')}} in path not present in schema "${this._schema}"`);
         }
 
         const linkages = _getLinkages(this._adjacency, nodeMatches.map(tup => tup.nodeIndex));
-        const nodes = nodeMatches.map(tup => this._nodes[tup.nodeIx]);
-        const statement = _pathToQuery(nodes, linkages);
+        console.log(this._nodes);
+        console.log(this._adjacency);
+        if (!linkages.every(l => !!l)) {
+            throw new Error('Some of the tables in path do not join!');
+        }
+        const nodes = nodeMatches.map(tup => this._nodes[tup.nodeIndex]);
+        const statement = _pathToQuery(nodes, linkages, this._schema);
+        console.log(statement);
         const rs = await con.query({text: statement, values: [fromKey, toKey]});
 
         return rs.rows.length && rs.rows[0].belongs;

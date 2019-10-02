@@ -28,5 +28,9 @@
   "bugs": {
     "url": "https://github.com/holub008/belongsql/issues"
   },
-  "homepage": "https://github.com/holub008/belongsql#readme"
+  "homepage": "https://github.com/holub008/belongsql#readme",
+  "devDependencies": {
+    "mocha": "^6.2.1",
+    "pg": "^7.12.1"
+  }
 }
