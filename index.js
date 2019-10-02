@@ -136,76 +136,38 @@ function _pathToQuery(nodes, linkages, schema) {
 }
 
 async function buildAdjacencyMatrix(con, schema, directed) {
+    // NOTE: there are some views in information_schema that abtract this nasty parsing
+    // but, they only produce usable listings for owner roles. this approach allows read only users to get listings
     const tableDataQuery = {
         text: `
-            WITH foreign_keys AS (
-              SELECT
-                'foreign' as key_type,
-                tc.table_name, 
-                kcu.column_name, 
-                ccu.table_name AS foreign_table_name,
-                ccu.column_name AS foreign_column_name 
-              FROM information_schema.table_constraints AS tc 
-              JOIN information_schema.key_column_usage AS kcu
-                ON tc.constraint_name = kcu.constraint_name
-                  AND tc.table_schema = kcu.table_schema
-              JOIN information_schema.constraint_column_usage AS ccu
-                ON ccu.constraint_name = tc.constraint_name
-                  AND ccu.table_schema = tc.table_schema
-              WHERE 
-                tc.constraint_type = 'FOREIGN KEY'
-                AND ccu.table_schema = $1
-            ),
-            primary_keys AS (
-                SELECT
-                  'primary' as key_type,
-                  tc.table_name, 
-                  kcu.column_name,
-                  null AS foreign_table_name,
-                  null AS foreign_column_name
-              FROM information_schema.table_constraints AS tc 
-              JOIN information_schema.key_column_usage AS kcu
-                ON tc.constraint_name = kcu.constraint_name
-                  AND tc.table_schema = kcu.table_schema
-              JOIN information_schema.constraint_column_usage AS ccu
-                ON ccu.constraint_name = tc.constraint_name
-                  AND ccu.table_schema = tc.table_schema
-              WHERE 
-                tc.constraint_type = 'PRIMARY KEY'
-                AND ccu.table_schema = $1
-            ),
-            all_tables AS (
-              SELECT
-                table_name
-              FROM information_schema.tables 
-              WHERE 
-                table_schema = $1
-                and table_type = 'BASE TABLE'  
-            )
-            SELECT 
-              pk.*
-            FROM primary_keys pk
-            JOIN all_tables at
-              ON pk.table_name = at.table_name
-            
-            UNION ALL
-            
             SELECT
-              fk.*
-            FROM foreign_keys fk
-            JOIN all_tables at
-              ON fk.table_name = at.table_name;
-
+              pgc.conrelid::regclass::text AS table_name,
+              (string_to_array((string_to_array(pg_get_constraintdef(pgc.oid),'('))[2],')'))[1] AS column_name,
+              case when pgc.contype = 'f' 
+                then pgc.confrelid::regclass::text 
+                else null 
+              end AS foreign_table_name,
+              case when pgc.contype = 'f'
+                then (string_to_array((string_to_array(pg_get_constraintdef(pgc.oid),'('))[3],')'))[1]
+                else null
+              end AS foreign_column_name,
+              trim((string_to_array(pg_get_constraintdef(pgc.oid),'('))[1]) AS key_type
+            FROM pg_constraint pgc
+            JOIN pg_namespace pgn
+              ON pgn.oid =  pgc.connamespace
+            WHERE
+              pgc.contype IN ( 'f', 'p' )
+              AND pgn.nspname = $1
         `,
         values: [schema]
     };
 
-    const rawTableData = con.query(tableDataQuery);
+    const rawTableData = await con.query(tableDataQuery);
 
     // first pass: map tables to matrix indices
     // we sort alphabetically so that we can binary search to query
-    const sortedNodes = rawTableData
-        .filter(t => t.key_type === 'primary')
+    const sortedNodes = rawTableData.rows
+        .filter(t => t.key_type === 'PRIMARY KEY')
         .sort((a ,b) => {
             return a.tableName === b.tableName ?
                 0 : a.tableName > b.tableName ?
@@ -213,12 +175,12 @@ async function buildAdjacencyMatrix(con, schema, directed) {
         })
         .map(t => new _Node(t.table_name, t.column_name));
 
-    const adjacency = Array(sortedNodes.length - 1)
+    const adjacency = Array(sortedNodes.length)
         .fill(null)
         .map(() => Array(sortedNodes.length - 1).fill(null));
 
 
-    const foreignKeys = rawTableData.filter(t => t.key_type === 'foreign');
+    const foreignKeys = rawTableData.rows.filter(t => t.key_type === 'FOREIGN KEY');
 
     foreignKeys.forEach(fk => {
         const fromIx = _binarySearch(sortedNodes, fk.table_name);
@@ -235,7 +197,6 @@ async function buildAdjacencyMatrix(con, schema, directed) {
         }
     });
 
-
     return {
         adjacency: adjacency,
         nodes: sortedNodes
@@ -244,19 +205,21 @@ async function buildAdjacencyMatrix(con, schema, directed) {
 
 class SchemaGraph {
 
-    constructor(adjacency, nodes) {
+    constructor(adjacency, nodes, schema) {
         this._adjacency = adjacency;
         this._nodes = nodes;
+        this._schema = schema;
     }
 
-    async static fromDB(con, schema='public', directed=true) {
+    static async fromDB(con, schema='public', directed=true) {
         return buildAdjacencyMatrix(con, schema, directed)
-            .then(result => {new SchemaGraph(result.adjacency, result.nodes));
+            .then(result => {new SchemaGraph(result.adjacency, result.nodes, schema)});
     }
 
     /**
      * NOTE! the first 4 arguments must come from trusted sources - are vulnerable to injection attacks in current state
      * NOTE! if multiple join paths are possible, an arbitrary selection among the shortest length paths is made.
+     * NOTE! if multiple join paths are possible, you may not be getting the intended "belong-to" relationship
      *
      * @param fromTable <String> the table name containing the object that belongs
      * @param fromKey the key of an object in fromTable
@@ -265,7 +228,7 @@ class SchemaGraph {
      * @param con a node-postgres connection object
      * @param queryLimit if more than one sequence of joins is possible to assert a "belongs-to" relationship, impose a limit on the number of resulting queries
      */
-    async belongsTo(fromTable, fromKey, toTable, toKey, con,
+    async belongsToAuto_Dangerous(fromTable, fromKey, toTable, toKey, con,
                     queryLimit=1) {
         const fromNodeIx = this._nodes[_binarySearch(this._adjacency, this._nodes, fromTable)];
         const toNodeIx = this._nodes[_binarySearch(this._adjacency, this._nodes, toTable)];
@@ -282,7 +245,7 @@ class SchemaGraph {
                 continue;
             }
 
-            const statement = _pathToQuery(pathNodes, pathLinkages);
+            const statement = _pathToQuery(pathNodes, pathLinkages, this._schema);
             const rs = await con.query({text: statement, values: [fromKey, toKey]});
             if (rs.rows.length && rs.rows[0].belongs) {
                 return true;
@@ -291,4 +254,32 @@ class SchemaGraph {
 
         return false;
     }
+
+    /**
+     * NOTE! path must come from trusted sources - is vulnerable to injection attacks. a hacked work around is to only supply a read-only connection
+     *
+     * @param fromKey
+     * @param toKey
+     * @param path
+     * @param con
+     * @return {Promise<number | *>}
+     */
+    async belongsTo(fromKey, toKey, path, con) {
+        const nodeMatches = path.map((table, ix) => ({nodeIndex: _binarySearch(this._nodes, table), pathIx: ix}));
+        const missingTables = nodeMatches.filter(tup => !!tup.node);
+        if (missingTables.length) {
+            throw new Error(`Table(s) {${missingTables.map(tup => path[tup.pathIx]).join(',')}} in path not present in schema "${this._schema}"`);
+        }
+
+        const linkages = _getLinkages(this._adjacency, nodeMatches.map(tup => tup.nodeIndex));
+        const nodes = nodeMatches.map(tup => this._nodes[tup.nodeIx]);
+        const statement = _pathToQuery(nodes, linkages);
+        const rs = await con.query({text: statement, values: [fromKey, toKey]});
+
+        return rs.rows.length && rs.rows[0].belongs;
+    }
 }
+
+module.exports = {
+    SchemaGraph
+};
