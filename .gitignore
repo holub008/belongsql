@@ -1,4 +1,4 @@
 node_modules/
 .idea/
 .DS_Store
-tests/dev_test.js
+test/dev_test.js
