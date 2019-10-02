@@ -62,13 +62,13 @@ function _bfs(adjacency, goalIndex, path) {
     if (neighbors.has(goalIndex)) {
         const newPath = path.slice();
         newPath.push(goalIndex);
-        return path;
+        return [newPath];
     }
 
     const pathSet = new Set(path);
 
     // prevent cycles by only exploring new paths
-    const newNeighbors = neighbors.filter(n => !pathSet.has(n));
+    const newNeighbors = [...neighbors].filter(n => !pathSet.has(n));
 
     if (newNeighbors.size === 0) {
         return null;
@@ -80,9 +80,14 @@ function _bfs(adjacency, goalIndex, path) {
         const newPath = path.slice();
         newPath.push(n);
 
-        const successfulPaths = _bfs(adjacency, goalIndex, newPath).filter(x => !!x);
-        pathsFromHere.concat(successfulPaths);
+        _bfs(adjacency, goalIndex, newPath)
+            .filter(x => !!x)
+            .forEach(p => {
+                pathsFromHere.push(p);
+            });
     });
+
+    console.log(pathsFromHere);
 
     return pathsFromHere;
 }
@@ -102,7 +107,6 @@ function _getLinkages(adjacency, nodeIndexPath) {
 function _graphSearch(adjacency, nodes, startIndex, goalIndex) {
     const nodeIndexPaths = _bfs(adjacency, goalIndex, [startIndex]);
     const pathLinkages = nodeIndexPaths.map(nodeIndexPath => _getLinkages(adjacency, nodeIndexPath));
-
 
     return {
         nodes: nodeIndexPaths.map(nodeIndexPath => nodeIndexPath.map(ix => nodes[ix])),
@@ -229,14 +233,15 @@ class SchemaGraph {
      */
     async belongsToAuto_Dangerous(fromTable, fromKey, toTable, toKey, con,
                     queryLimit=1) {
-        const fromNodeIx = this._nodes[_binarySearch(this._adjacency, this._nodes, fromTable)];
-        const toNodeIx = this._nodes[_binarySearch(this._adjacency, this._nodes, toTable)];
+        const fromNodeIx = _binarySearch(this._nodes, fromTable);
+        const toNodeIx = _binarySearch(this._nodes, toTable);
 
         if (fromNodeIx < 0 || toNodeIx < 0) {
             throw new Error(`One of ${fromTable} or ${toTable} are not present in schema ${this._schema}`);
         }
 
         const {nodes, linkages} = _graphSearch(this._adjacency, this._nodes, fromNodeIx, toNodeIx);
+        console.log(nodes);
 
         // queries are run serially, to avoid pegging DB in case of large queries
         // with API additions, it would make sense to run in parallel
@@ -249,6 +254,7 @@ class SchemaGraph {
             }
 
             const statement = _pathToQuery(pathNodes, pathLinkages, this._schema);
+            console.log(statement);
             const rs = await con.query({text: statement, values: [fromKey, toKey]});
             if (rs.rows.length && rs.rows[0].belongs) {
                 return true;
@@ -279,14 +285,11 @@ class SchemaGraph {
         }
 
         const linkages = _getLinkages(this._adjacency, nodeMatches.map(tup => tup.nodeIndex));
-        console.log(this._nodes);
-        console.log(this._adjacency);
         if (!linkages.every(l => !!l)) {
             throw new Error('Some of the tables in path do not join!');
         }
         const nodes = nodeMatches.map(tup => this._nodes[tup.nodeIndex]);
         const statement = _pathToQuery(nodes, linkages, this._schema);
-        console.log(statement);
         const rs = await con.query({text: statement, values: [fromKey, toKey]});
 
         return rs.rows.length && rs.rows[0].belongs;
