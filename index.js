@@ -254,7 +254,6 @@ class SchemaGraph {
             }
 
             const statement = _pathToQuery(pathNodes, pathLinkages, this._schema);
-            console.log(statement);
             const rs = await con.query({text: statement, values: [fromKey, toKey]});
             if (rs.rows.length && rs.rows[0].belongs) {
                 return true;
