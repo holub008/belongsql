@@ -30,7 +30,7 @@
   },
   "homepage": "https://github.com/holub008/belongsql#readme",
   "devDependencies": {
-    "mocha": "^6.2.1",
+    "mocha": "^10.2.0",
     "pg": "^7.12.1"
   }
 }
